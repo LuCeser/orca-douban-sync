@@ -1,4 +1,5 @@
 import { setupL10N, t } from "./libs/l10n"
+import { getMirrorId } from "./libs/utils.ts"
 import type { DbId } from "./orca.d.ts"
 import zhCN from "./translations/zhCN"
 
@@ -68,63 +69,107 @@ export async function load(_name: string) {
     command: `${pluginName}.executeAI`
   })
 
-  orca.commands.registerCommand(
-  'myPlugin.sayHello',
-  async () => {
-    console.log('Hello!');
-  },
-  '打招呼'
-);
-
   // 注册命令
-  orca.commands.registerCommand(
+  orca.commands.registerEditorCommand(
     `${pluginName}.executeAI`,
-    async (blockId: DbId) => {
+    async ([, , cursor], blockId?: DbId) => {
+
       try {
-        const block = orca.state.blocks[blockId]
-        
+        // 如果没有传入 blockId，使用光标所在的块
+        const targetBlockId = blockId ?? cursor.anchor.blockId;
+        const block = orca.state.blocks[targetBlockId];
+
         if (!block) {
           throw new Error('Block not found')
         }
 
+        console.log(blockId + ' ' + targetBlockId + ' block: ' + JSON.stringify(block))
+
         const settings = orca.state.plugins[pluginName]!.settings!
+
+        // const magicRef = block?.refs?.find(ref => 
+        //   ref.type === 2 //&&  // tag type
+        // );
+
         // 检查是否有 Magic 标签或引用 Magic 标签的 block
-        const hasMagicTag = block?.refs?.some(ref => ref.type === 2 && ref.alias === 'Magic');
         const magicRef = block?.refs?.find(ref => 
           ref.type === 2 && 
-          orca.state.blocks[ref.id]?.refs?.some(r => r.type === 2 && r.alias === 'Magic')
-        );
+          ref.data?.some(data => data.name === 'magic' && data.type === 2));
 
-      // 如果既没有Magic标签也没有Magic引用，则返回
-        if (!hasMagicTag && !magicRef) {
+        console.log('magicRef: ' + JSON.stringify(magicRef) )
+
+      // 如果没有引用模板，则返回
+        if (!magicRef) {
           throw new Error('No AI template found')
         }
-        
+
+        // 获取模板
+        const magicRefProp = magicRef.data?.find(data => data.name === 'magic' && data.type === 2)
+        console.log('magicProp: ' + JSON.stringify(magicRefProp))
+        if (!Array.isArray(magicRefProp?.value) || magicRefProp?.value.length !== 1) {
+          throw new Error('Too many AI template found')
+        }         
+        const magicRefId = magicRefProp?.value[0]
+        console.log('magicRefId: ' + magicRefId)
+
+        const magic = block?.refs?.find(ref => 
+          ref.id === magicRefId
+        );
+
+        if (!magic) {
+          throw new Error('Magic block not found')
+        }
+
+        const magicId = getMirrorId(magic.to ?? 0) // 添加默认值 0 避免 undefined
+
+        let magicBlock = orca.state.blocks[magic.to];
+        if (!magicBlock) {
+          console.log('magicId: ' + magicId + 'cannot find magicBlock, try to get it from backend')
+          magicBlock = await orca.invokeBackend("get-block", magicId);
+        }
+
+        console.log('magicBlock: ' + JSON.stringify(magicBlock))
+
         // 获取提示词
-        let prompt = ""
-        if (magicRef) {
-          const templateBlock = orca.state.blocks[magicRef.id]
-          prompt = templateBlock.text ?? ""
+        let systemPrompt = ""
+        if (magicBlock) {
+          if(Array.isArray(magicBlock.children) && magicBlock.children.length > 0) {
+            for (const child of magicBlock.children) {
+              let childBlock = orca.state.blocks[child]
+              if (!childBlock) {
+                childBlock = await orca.invokeBackend("get-block", child);
+              }
+              systemPrompt += childBlock.text ?? ""
+            }
+          } else {
+            console.log('magicBlock has no children')
+          }
+          console.log('prompt: ' + systemPrompt)
+        }
+
+        let userPrompt = ""
+        for (const child of block.children) {
+          let childBlock = orca.state.blocks[child]
+          if (!childBlock) {
+            childBlock = await orca.invokeBackend("get-block", child);
+          }
+          userPrompt += childBlock.text ?? ""
+          userPrompt += "\n"
         }
         
         // 生成响应
-        orca.notify('info', 'Generating AI response...')
-        const response = await generateAIResponse(prompt, settings)
-        
-        // 更新块内容
-        await orca.commands.invokeEditorCommand(
-          "core.editor.updateBlock",
-          null,
-          blockId,
-          [{ t: "p", v: response }]
-        )
-        
-        orca.notify('success', 'AI response generated')
+        orca.notify('success', 'Generating AI response...')
+        const response = await generateAIResponse(systemPrompt, userPrompt, settings)
+        console.log(response)
+        return null
       } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
-        orca.notify('error', message)
+          orca.notify('error', message)
+          return null
       }
-    }
+    },
+    () => {},
+    {label: t("Generate AI Response")},
   )
 
   // 监听设置变化
@@ -188,9 +233,11 @@ async function readyMagicTag(isUpdate = false) {
 }
 
 // AI 响应生成
-async function generateAIResponse(prompt: string, settings: any): Promise<string> {
+async function generateAIResponse(system: string, prompt: string, settings: any): Promise<string> {
   const { provider, endpoint, apiKey, model, temperature, maxTokens } = settings
 
+  console.log('system: ' + system)
+  console.log('prompt: ' + prompt)
   try {
     if (provider === 'openai') {
       const response = await fetch(`${endpoint}/v1/chat/completions`, {
@@ -201,7 +248,10 @@ async function generateAIResponse(prompt: string, settings: any): Promise<string
         },
         body: JSON.stringify({
           model,
-          messages: [{ role: 'user', content: prompt }],
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: prompt }
+          ],
           temperature,
           max_tokens: maxTokens
         })
@@ -217,7 +267,7 @@ async function generateAIResponse(prompt: string, settings: any): Promise<string
         },
         body: JSON.stringify({
           model,
-          prompt,
+          prompt: system,
           temperature,
           max_tokens: maxTokens
         })
