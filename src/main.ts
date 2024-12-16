@@ -16,16 +16,6 @@ export async function load(_name: string) {
 
   // 设置插件配置
   await orca.plugins.setSettingsSchema(pluginName, {
-    provider: {
-      label: t("AI Provider"),
-      description: t("Select AI service provider"),
-      type: "singleChoice",
-      defaultValue: "openai",
-      choices: [
-        { label: "OpenAI", value: "openai" },
-        { label: "Ollama", value: "ollama" }
-      ]
-    },
     endpoint: {
       label: t("API Endpoint"),
       description: t("API endpoint URL"),
@@ -64,8 +54,8 @@ export async function load(_name: string) {
   // 注册斜杠命令
   orca.slashCommands.registerSlashCommand(`${pluginName}.magic`, {
     icon: "✨",
-    group: "AI",
-    title: t("Magic AI"),
+    group: "Magic Note",
+    title: t("Magic"),
     command: `${pluginName}.executeAI`
   })
 
@@ -225,10 +215,6 @@ async function readyMagicTag(isUpdate = false) {
         {
           name: "ai",
           type: 6,
-          typeArgs: {
-            subType: "single",
-            choices: ["template", "reference"]
-          }
         }
       ]
     )
@@ -237,12 +223,9 @@ async function readyMagicTag(isUpdate = false) {
 
 // AI 响应生成
 async function generateAIResponse(system: string, prompt: string, settings: any): Promise<string> {
-  const { provider, endpoint, apiKey, model, temperature, maxTokens } = settings
+  const { endpoint, apiKey, model, temperature, maxTokens } = settings
 
-  console.log('system: ' + system)
-  console.log('prompt: ' + prompt)
   try {
-    if (provider === 'openai') {
       const response = await fetch(`${endpoint}/v1/chat/completions`, {
         method: 'POST',
         headers: {
@@ -260,28 +243,10 @@ async function generateAIResponse(system: string, prompt: string, settings: any)
           stream: false
         })
       })
-
       const data = await response.json()
       return data.choices[0].message.content
-    } else {
-      const response = await fetch(`${endpoint}/api/generate`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          model,
-          prompt: system,
-          temperature,
-          max_tokens: maxTokens
-        })
-      })
-
-      const data = await response.json()
-      return data.response
-    }
   } catch (error) {
-      const message = error instanceof Error ? error.message : 'Unknown error';
+    const message = error instanceof Error ? error.message : 'Unknown error';
     throw new Error(`AI generation failed: ${message}`)
   }
 }
