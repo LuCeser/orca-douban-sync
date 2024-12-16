@@ -1,5 +1,4 @@
 import { setupL10N, t } from "./libs/l10n"
-import { getMirrorId } from "./libs/utils.ts"
 import type { DbId } from "./orca.d.ts"
 import zhCN from "./translations/zhCN"
 
@@ -75,62 +74,68 @@ export async function load(_name: string) {
 
         console.log(blockId + ' ' + targetBlockId + ' block: ' + JSON.stringify(block))
 
-        const settings = orca.state.plugins[pluginName]!.settings!
 
-        // 检查是否有 Magic 标签或引用 Magic 标签的 block
-        const magicRef = block?.refs?.find(ref => 
-          ref.type === 2 && 
-          ref.data?.some(data => data.name === 'magic' && data.type === 2));
-
-        console.log('magicRef: ' + JSON.stringify(magicRef) )
-
-      // 如果没有引用模板，则返回
-        if (!magicRef) {
-          throw new Error('No AI template found')
-        }
-
-        // 获取模板
-        const magicRefProp = magicRef.data?.find(data => data.name === 'magic' && data.type === 2)
-        console.log('magicProp: ' + JSON.stringify(magicRefProp))
-        if (!Array.isArray(magicRefProp?.value) || magicRefProp?.value.length !== 1) {
-          throw new Error('Too many AI template found')
-        }         
-        const magicRefId = magicRefProp?.value[0]
-        console.log('magicRefId: ' + magicRefId)
-
-        const magic = block?.refs?.find(ref => 
-          ref.id === magicRefId
+        // 获取块的标签属性
+        const tagsProperty = block.properties.find(prop => 
+          prop.name === '_tags' && prop.type === 2
         );
 
-        if (!magic) {
-          throw new Error('Magic block not found')
+        if (!tagsProperty || !Array.isArray(tagsProperty.value)) {
+          throw new Error('cannot find tags property')
         }
 
-        const magicId = getMirrorId(magic.to ?? 0) // 添加默认值 0 避免 undefined
+        const tagIds = tagsProperty.value;
+        console.log('tagIds:', tagIds)
 
-        let magicBlock = orca.state.blocks[magic.to];
-        if (!magicBlock) {
-          console.log('magicId: ' + magicId + 'cannot find magicBlock, try to get it from backend')
-          magicBlock = await orca.invokeBackend("get-block", magicId);
-        }
+              // 从 refs 中获取标签信息
+        const tagRefs = block.refs.filter(ref => 
+          tagIds.includes(ref.id) && ref.type === 2
+        );
 
-        console.log('magicBlock: ' + JSON.stringify(magicBlock))
+        console.log('tagRefs:', JSON.stringify(tagRefs))
+
+        // 获取标签块内容
+        const tagPromises = tagRefs.map(async ref => {
+          const tagBlock = orca.state.blocks[ref.to];
+          if (!tagBlock) {
+            return await orca.invokeBackend("get-block", ref.to);
+          }
+          return tagBlock;
+        });
+        const tagBlocks = await Promise.all(tagPromises);
+        console.log('tagBlocks:', JSON.stringify(tagBlocks))
+
+        // 查找包含 Magic 属性的标签
+        const magicTag = tagBlocks.find(tag => {
+          const isProperty = tag.properties.find((prop: any) => 
+            prop.name === '_is' && 
+            prop.type === 6 && 
+            Array.isArray(prop.value) && 
+            prop.value.includes('Magic')
+          );
+          return isProperty !== undefined;
+      });
+
+      if (!magicTag) {
+        throw new Error('No Magic tag found')
+      }
+
+      console.log('magicTag: ' + JSON.stringify(magicTag))
+
+      const settings = orca.state.plugins[pluginName]!.settings!
 
         // 获取提示词
-        let systemPrompt = ""
-        if (magicBlock) {
-          if(Array.isArray(magicBlock.children) && magicBlock.children.length > 0) {
-            for (const child of magicBlock.children) {
-              let childBlock = orca.state.blocks[child]
-              if (!childBlock) {
-                childBlock = await orca.invokeBackend("get-block", child);
-              }
-              systemPrompt += childBlock.text ?? ""
-            }
-          } else {
-            console.log('magicBlock has no children')
+      let systemPrompt = ""
+
+      if(Array.isArray(magicTag.children) && magicTag.children.length > 0) {
+        for (const child of magicTag.children) {
+          let childBlock = orca.state.blocks[child]
+          if (!childBlock) {
+            childBlock = await orca.invokeBackend("get-block", child);
           }
+          systemPrompt += childBlock.text ?? ""
         }
+      }
 
         let userPrompt = ""
         for (const child of block.children) {
