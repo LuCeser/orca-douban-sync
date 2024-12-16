@@ -87,10 +87,6 @@ export async function load(_name: string) {
 
         const settings = orca.state.plugins[pluginName]!.settings!
 
-        // const magicRef = block?.refs?.find(ref => 
-        //   ref.type === 2 //&&  // tag type
-        // );
-
         // 检查是否有 Magic 标签或引用 Magic 标签的 block
         const magicRef = block?.refs?.find(ref => 
           ref.type === 2 && 
@@ -144,7 +140,6 @@ export async function load(_name: string) {
           } else {
             console.log('magicBlock has no children')
           }
-          console.log('prompt: ' + systemPrompt)
         }
 
         let userPrompt = ""
@@ -161,6 +156,14 @@ export async function load(_name: string) {
         orca.notify('success', 'Generating AI response...')
         const response = await generateAIResponse(systemPrompt, userPrompt, settings)
         console.log(response)
+        // 修改单个块的内容
+        await orca.commands.invokeEditorCommand(
+          "core.editor.insertBlock",
+          null,
+          block, // 块ID数组
+          "lastChild", 
+          [{ t: "t", v: response }] // ContentFragment数组
+        );
         return null
       } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
@@ -253,7 +256,8 @@ async function generateAIResponse(system: string, prompt: string, settings: any)
             { role: 'user', content: prompt }
           ],
           temperature,
-          max_tokens: maxTokens
+          max_tokens: maxTokens,
+          stream: false
         })
       })
 
