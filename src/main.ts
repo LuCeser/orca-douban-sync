@@ -1,5 +1,4 @@
 import { setupL10N, t } from "./libs/l10n"
-import { getMirrorId } from "./libs/utils.ts"
 import type { DbId } from "./orca.d.ts"
 import zhCN from "./translations/zhCN"
 
@@ -7,338 +6,252 @@ const { subscribe } = window.Valtio
 
 let pluginName: string
 let unsubscribe: () => void
-let prevTaskTagName: string
-
-const statusState: Map<string, string> = new Map()
+let prevMagicTagName: string
 
 export async function load(_name: string) {
   pluginName = _name
 
-  // Your plugin code goes here.
   setupL10N(orca.state.locale, { "zh-CN": zhCN })
 
+  // 设置插件配置
   await orca.plugins.setSettingsSchema(pluginName, {
-    taskName: {
-      label: t("Task tag name"),
-      description: t("The name of the tag that is used to identify tasks."),
+    endpoint: {
+      label: t("API Endpoint"),
+      description: t("API endpoint URL"),
       type: "string",
-      defaultValue: "Task",
+      defaultValue: "https://api.openai.com/v1"
     },
-    statusName: {
-      label: t("Status property name"),
-      description: t(
-        "The name of the property that stores the status of a task.",
-      ),
+    apiKey: {
+      label: t("API Key"),
+      description: t("Your API key"),
       type: "string",
-      defaultValue: "Status",
+      defaultValue: ""
     },
-    statusTodo: {
-      label: t("Todo status value"),
-      description: t(
-        "The value of the status property that represents a task that is not started yet.",
-      ),
+    model: {
+      label: t("Model"),
+      description: t("AI model name"),
       type: "string",
-      defaultValue: "TODO",
+      defaultValue: "gpt-3.5-turbo"
     },
-    statusDoing: {
-      label: t("Doing status value"),
-      description: t(
-        "The value of the status property that represents a task that is in progress.",
-      ),
-      type: "string",
-      defaultValue: "Doing",
+    temperature: {
+      label: t("Temperature"),
+      description: t("Response randomness (0-1)"),
+      type: "number",
+      defaultValue: 0.7
     },
-    statusDone: {
-      label: t("Done status value"),
-      description: t(
-        "The value of the status property that represents a task that is completed.",
-      ),
-      type: "string",
-      defaultValue: "Done",
-    },
-    startTimeName: {
-      label: t("Start time property name"),
-      description: t(
-        "The name of the property that stores the start time of a task.",
-      ),
-      type: "string",
-      defaultValue: "Start time",
-    },
-    endTimeName: {
-      label: t("End time property name"),
-      description: t(
-        "The name of the property that stores the end time of a task.",
-      ),
-      type: "string",
-      defaultValue: "End time",
-    },
-  })
-
-  prevTaskTagName = orca.state.plugins[pluginName]!.settings!.taskName
-  await readyTag()
-  injectStyles()
-
-  unsubscribe = subscribe(orca.state.plugins[pluginName]!, async () => {
-    if (orca.state.plugins[pluginName]!.settings) {
-      await readyTag(true)
-      removeStyles()
-      injectStyles()
-    } else {
-      removeStyles()
+    maxTokens: {
+      label: t("Max Tokens"),
+      description: t("Maximum response length"),
+      type: "number",
+      defaultValue: 2000
     }
   })
 
-  if (orca.state.commands[`${pluginName}.cycleTaskStatus`] == null) {
-    orca.commands.registerEditorCommand(
-      `${pluginName}.cycleTaskStatus`,
-      async ([, , cursor], id?: DbId) => {
-        if (cursor.anchor !== cursor.focus) return null
+  prevMagicTagName = "Magic"
+  await readyMagicTag()
 
-        const settings = orca.state.plugins[pluginName]!.settings!
-        const blockId = getMirrorId(id ?? cursor.anchor.blockId)
-        const block = orca.state.blocks[blockId]
+  // 注册斜杠命令
+  orca.slashCommands.registerSlashCommand(`${pluginName}.magic`, {
+    icon: "✨",
+    group: "Magic Note",
+    title: t("Magic"),
+    command: `${pluginName}.executeAI`
+  })
 
-        if (block == null) return null
+  // 注册命令
+  orca.commands.registerEditorCommand(
+    `${pluginName}.executeAI`,
+    async ([, , cursor], blockId?: DbId) => {
 
-        const tagRef = block.refs.find(
-          (r) => r.type === 2 && r.alias === settings.taskName,
-        )
+      try {
+        // 如果没有传入 blockId，使用光标所在的块
+        const targetBlockId = blockId ?? cursor.anchor.blockId;
+        const block = orca.state.blocks[targetBlockId];
 
-        if (tagRef == null) {
-          await orca.commands.invokeEditorCommand(
-            "core.editor.insertTag",
-            cursor,
-            blockId,
-            settings.taskName,
-            [
-              { name: settings.statusName, value: settings.statusTodo },
-              { name: settings.startTimeName, value: null },
-              { name: settings.endTimeName, value: null },
-            ],
-          )
-        } else {
-          const currStatus =
-            tagRef.data?.find((d) => d.name === settings.statusName)?.value ??
-            ""
-          const nextStatus = statusState.get(currStatus)
-          const currStartTime = tagRef.data?.find(
-            (d) => d.name === settings.startTimeName,
-          )?.value
-          const currEndTime = tagRef.data?.find(
-            (d) => d.name === settings.endTimeName,
-          )?.value
-
-          await orca.commands.invokeEditorCommand(
-            "core.editor.insertTag",
-            cursor,
-            blockId,
-            settings.taskName,
-            [
-              { name: settings.statusName, value: nextStatus },
-              {
-                name: settings.startTimeName,
-                type: 5,
-                value:
-                  nextStatus === settings.statusDoing
-                    ? new Date()
-                    : currStartTime,
-              },
-              {
-                name: settings.endTimeName,
-                type: 5,
-                value:
-                  nextStatus === settings.statusDone ? new Date() : currEndTime,
-              },
-            ],
-          )
+        if (!block) {
+          throw new Error('Block not found')
         }
 
+        console.log(blockId + ' ' + targetBlockId + ' block: ' + JSON.stringify(block))
+
+
+        // 获取块的标签属性
+        const tagsProperty = block.properties.find(prop => 
+          prop.name === '_tags' && prop.type === 2
+        );
+
+        if (!tagsProperty || !Array.isArray(tagsProperty.value)) {
+          throw new Error('cannot find tags property')
+        }
+
+        const tagIds = tagsProperty.value;
+        console.log('tagIds:', tagIds)
+
+              // 从 refs 中获取标签信息
+        const tagRefs = block.refs.filter(ref => 
+          tagIds.includes(ref.id) && ref.type === 2
+        );
+
+        console.log('tagRefs:', JSON.stringify(tagRefs))
+
+        // 获取标签块内容
+        const tagPromises = tagRefs.map(async ref => {
+          const tagBlock = orca.state.blocks[ref.to];
+          if (!tagBlock) {
+            return await orca.invokeBackend("get-block", ref.to);
+          }
+          return tagBlock;
+        });
+        const tagBlocks = await Promise.all(tagPromises);
+        console.log('tagBlocks:', JSON.stringify(tagBlocks))
+
+        // 查找包含 Magic 属性的标签
+        const magicTag = tagBlocks.find(tag => {
+          const isProperty = tag.properties.find((prop: any) => 
+            prop.name === '_is' && 
+            prop.type === 6 && 
+            Array.isArray(prop.value) && 
+            prop.value.includes('Magic')
+          );
+          return isProperty !== undefined;
+      });
+
+      if (!magicTag) {
+        throw new Error('No Magic tag found')
+      }
+
+      console.log('magicTag: ' + JSON.stringify(magicTag))
+
+      const settings = orca.state.plugins[pluginName]!.settings!
+
+        // 获取提示词
+      let systemPrompt = ""
+
+      if(Array.isArray(magicTag.children) && magicTag.children.length > 0) {
+        for (const child of magicTag.children) {
+          let childBlock = orca.state.blocks[child]
+          if (!childBlock) {
+            childBlock = await orca.invokeBackend("get-block", child);
+          }
+          systemPrompt += childBlock.text ?? ""
+        }
+      }
+
+        let userPrompt = ""
+        for (const child of block.children) {
+          let childBlock = orca.state.blocks[child]
+          if (!childBlock) {
+            childBlock = await orca.invokeBackend("get-block", child);
+          }
+          userPrompt += childBlock.text ?? ""
+          userPrompt += "\n"
+        }
+        
+        // 生成响应
+        orca.notify('success', 'Generating AI response...')
+        const response = await generateAIResponse(systemPrompt, userPrompt, settings)
+        console.log(response)
+        // 修改单个块的内容
+        await orca.commands.invokeEditorCommand(
+          "core.editor.insertBlock",
+          null,
+          block, // 块ID数组
+          "lastChild", 
+          [{ t: "t", v: response }] // ContentFragment数组
+        );
         return null
-      },
-      () => {},
-      { label: t("Make block a task and cycle its status") },
-    )
-  }
+      } catch (error) {
+          const message = error instanceof Error ? error.message : 'Unknown error';
+          orca.notify('error', message)
+          return null
+      }
+    },
+    () => {},
+    {label: t("Generate AI Response")},
+  )
 
-  if (orca.state.shortcuts[`${pluginName}.cycleTaskStatus`] == null) {
-    orca.shortcuts.assign("alt+enter", `${pluginName}.cycleTaskStatus`)
-  }
-
-  document.body.addEventListener("click", onClick)
-
-  console.log(`${pluginName} loaded.`)
+  // 监听设置变化
+  unsubscribe = subscribe(orca.state.plugins[pluginName]!, async () => {
+    if (orca.state.plugins[pluginName]!.settings) {
+      await readyMagicTag(true)
+    }
+  })
 }
 
 export async function unload() {
-  // Clean up any resources used by the plugin here.
-  unsubscribe()
-  removeStyles()
-  orca.shortcuts.reset(`${pluginName}.cycleTaskStatus`)
-  orca.commands.unregisterEditorCommand(`${pluginName}.cycleTaskStatus`)
-  document.body.removeEventListener("click", onClick)
-
-  console.log(`${pluginName} unloaded.`)
+  unsubscribe?.()
+  orca.slashCommands.unregisterSlashCommand(`${pluginName}.magic`)
+  orca.commands.unregisterCommand(`${pluginName}.executeAI`)
 }
 
-async function readyTag(isUpdate: boolean = false) {
-  const settings = orca.state.plugins[pluginName]!.settings!
+// 准备 Magic 标签
+async function readyMagicTag(isUpdate = false) {
 
-  statusState.clear()
-  statusState.set("", settings.statusTodo)
-  statusState.set(settings.statusTodo, settings.statusDoing)
-  statusState.set(settings.statusDoing, settings.statusDone)
-  statusState.set(settings.statusDone, settings.statusTodo)
+  let { id: magicBlockId } = 
+    (await orca.invokeBackend("get-blockid-by-alias", "Magic")) ?? {}
+  const nonExistent = magicBlockId == null
 
-  // Remove old task tag
-  if (settings.taskName !== prevTaskTagName) {
-    const { id: oldTaskId } =
-      (await orca.invokeBackend("get-blockid-by-alias", prevTaskTagName)) ?? {}
-    if (oldTaskId) {
-      try {
-        await orca.commands.invokeEditorCommand(
-          "core.editor.deleteBlocks",
-          null,
-          [oldTaskId],
-        )
-      } catch (err) {
-        // ignore
-      }
-    }
-  }
-
-  let { id: taskBlockId } =
-    (await orca.invokeBackend("get-blockid-by-alias", settings.taskName)) ?? {}
-  const nonExistent = taskBlockId == null
-
-  // Ensure task tag exists
   if (nonExistent) {
     await orca.commands.invokeGroup(async () => {
-      taskBlockId = await orca.commands.invokeEditorCommand(
+      magicBlockId = await orca.commands.invokeEditorCommand(
         "core.editor.insertBlock",
         null,
         null,
         null,
-        [{ t: "t", v: settings.taskName }],
+        [{ t: "t", v: "Magic" }]
       )
 
       await orca.commands.invokeEditorCommand(
         "core.editor.createAlias",
         null,
-        settings.taskName,
-        taskBlockId,
+        "Magic",
+        magicBlockId
       )
-
-      prevTaskTagName = settings.taskName
     })
   }
 
   if (isUpdate || nonExistent) {
-    // Set task tag properties
+    // 设置 Magic 标签属性
     await orca.commands.invokeEditorCommand(
       "core.editor.setProperties",
       null,
-      [taskBlockId],
+      [magicBlockId],
       [
         {
-          name: settings.statusName,
+          name: "ai",
           type: 6,
-          typeArgs: {
-            subType: "single",
-            choices: [
-              settings.statusTodo,
-              settings.statusDoing,
-              settings.statusDone,
-            ],
-          },
-        },
-        {
-          name: settings.startTimeName,
-          type: 5,
-          typeArgs: { subType: "datetime" },
-        },
-        {
-          name: settings.endTimeName,
-          type: 5,
-          typeArgs: { subType: "datetime" },
-        },
-      ],
+        }
+      ]
     )
   }
 }
 
-function injectStyles() {
-  const settings = orca.state.plugins[pluginName]!.settings!
-  const taskTagName = settings.taskName.toLowerCase()
-  const statusPropName = settings.statusName.replace(/ /g, "-").toLowerCase()
-  const statusTodoValue = settings.statusTodo
-  const statusDoingValue = settings.statusDoing
-  const statusDoneValue = settings.statusDone
+// AI 响应生成
+async function generateAIResponse(system: string, prompt: string, settings: any): Promise<string> {
+  const { endpoint, apiKey, model, temperature, maxTokens } = settings
 
-  const styles = `
-    .orca-repr-main:has(>.orca-tags .orca-tag[data-name="${taskTagName}"]) .orca-repr-main-content::before {
-      font-family: "tabler-icons";
-      speak: none;
-      font-style: normal;
-      font-weight: normal;
-      font-variant: normal;
-      text-transform: none;
-      -webkit-font-smoothing: antialiased;
-      margin-right: var(--orca-spacing-md);
-      cursor: pointer;
-    }
-
-    .orca-repr-main:has(>.orca-tags .orca-tag[data-name="${taskTagName}"][data-${statusPropName}="${statusTodoValue}"]) .orca-repr-main-content::before {
-      content: "\\ed27";
-    }
-
-    .orca-repr-main:has(>.orca-tags .orca-tag[data-name="${taskTagName}"][data-${statusPropName}="${statusDoingValue}"]) .orca-repr-main-content::before {
-      content: "\\fa0d";
-    }
-
-    .orca-repr-main:has(>.orca-tags .orca-tag[data-name="${taskTagName}"][data-${statusPropName}="${statusDoneValue}"]) .orca-repr-main-content::before {
-      content: "\\f704";
-    }
-
-    .orca-repr-main:has(>.orca-tags .orca-tag[data-name="${taskTagName}"][data-${statusPropName}="${statusDoneValue}"]) {
-      opacity: 0.75;
-    }
-  `
-
-  const styleEl = document.createElement("style")
-  styleEl.dataset.role = pluginName
-  styleEl.innerHTML = styles
-  document.head.appendChild(styleEl)
-}
-
-function removeStyles() {
-  const styleEls = document.querySelectorAll(`style[data-role="${pluginName}"]`)
-  styleEls.forEach((el) => el.remove())
-}
-
-function onClick(e: MouseEvent) {
-  const target = e.target as HTMLElement
-  if (!target?.classList.contains("orca-repr-main-content")) return
-
-  const rect = target.getBoundingClientRect()
-  const x = e.clientX - rect.left
-  const y = e.clientY - rect.top
-  if (x < 0 || x > 18 || y < 0 || y > 18) return
-
-  const settings = orca.state.plugins[pluginName]!.settings!
-  const parent = target.parentElement
-  if (
-    parent?.querySelector(
-      `.orca-tag[data-name="${settings.taskName.toLowerCase()}"]`,
-    ) == null
-  )
-    return
-
-  const blockId = (parent.closest(".orca-block") as HTMLElement)?.dataset.id
-  if (blockId == null) return
-
-  orca.commands.invokeEditorCommand(
-    `${pluginName}.cycleTaskStatus`,
-    null,
-    blockId,
-  )
+  try {
+      const response = await fetch(`${endpoint}/v1/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: prompt }
+          ],
+          temperature,
+          max_tokens: maxTokens,
+          stream: false
+        })
+      })
+      const data = await response.json()
+      return data.choices[0].message.content
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Unknown error';
+    throw new Error(`AI generation failed: ${message}`)
+  }
 }

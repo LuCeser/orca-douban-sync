@@ -1,8 +1,6 @@
-# Simple Task
+# Magic Note
 
-A Orca Note plugin that provides the ability to create tasks.
-
-It also serves as a template for creating Orca Note plugins.
+A Orca Note plugin that provides the ability to use AI to generate content.
 
 ![image](https://github.com/user-attachments/assets/eb2f7bd7-d420-4352-93a7-249bed7808e2)
 
